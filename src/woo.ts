@@ -82,3 +82,37 @@ export async function fetchFeaturedProducts(limit: number): Promise<WooProduct[]
     onSale: !!p.on_sale,
   }));
 }
+
+function mapProduct(p: any): WooProduct {
+  return {
+    id: Number(p.id),
+    name: String(p.name || ''),
+    permalink: String(p.permalink || ''),
+    image: p?.images?.[0]?.src ? String(p.images[0].src) : null,
+    price: String(p.price || p.regular_price || ''),
+    regularPrice: p.on_sale && p.regular_price ? String(p.regular_price) : null,
+    onSale: !!p.on_sale,
+  };
+}
+
+// Mescla NOVIDADES (ultimos cadastrados) + MAIS VENDIDOS, intercalando e sem repetir.
+export async function fetchCampaignProducts(newCount: number, bestCount: number): Promise<WooProduct[]> {
+  const [newest, best] = await Promise.all([
+    wooGet(`status=publish&per_page=${newCount}&orderby=date&order=desc`),
+    wooGet(`status=publish&per_page=${bestCount}&orderby=popularity&order=desc`),
+  ]);
+
+  const seen = new Set<number>();
+  const out: WooProduct[] = [];
+  const max = Math.max(newest.length, best.length);
+  for (let i = 0; i < max; i++) {
+    for (const src of [newest[i], best[i]]) {
+      if (!src) continue;
+      const id = Number(src.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(mapProduct(src));
+    }
+  }
+  return out;
+}

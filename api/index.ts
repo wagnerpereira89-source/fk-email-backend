@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { handle } from '@hono/node-server/vercel';
 import { getSupabase, hasSupabaseEnv } from '../src/db.js';
 import { sendEmail, hasSesEnv } from '../src/ses.js';
-import { fetchOrdersPage, fetchFeaturedProducts, hasWooEnv } from '../src/woo.js';
+import { fetchOrdersPage, fetchCampaignProducts, hasWooEnv } from '../src/woo.js';
 import { renderCampaignHtml } from '../src/template.js';
 import { unsubUrl, verifyEmail } from '../src/sign.js';
 
@@ -19,7 +19,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.1.5',
+    version: '0.1.6',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -216,9 +216,11 @@ app.post('/campaigns/test', async (c) => {
   const to = (body?.to ?? '').trim();
   if (!to) return c.json({ error: 'Faltou o campo "to".' }, 400);
 
-  const intro = body?.intro || 'Separamos uns queridinhos que a gente sabe que você vai amar 💜';
-  const subject = body?.subject || 'Novidades que você vai amar 💜';
-  const limit = Math.min(Math.max(Number(body?.limit || 6), 1), 12);
+  const intro = body?.intro || 'Separamos uns queridinhos que a gente sabe que você vai amar 🩷';
+  const subject = body?.subject || 'Novidades que você vai amar 🩷';
+  // 4 novidades + 4 mais vendidos, mesclados (pode sobrescrever no body)
+  const newCount = Math.min(Math.max(Number(body?.newCount || 4), 1), 8);
+  const bestCount = Math.min(Math.max(Number(body?.bestCount || 4), 1), 8);
 
   const supabase = getSupabase();
   const { data: client, error } = await supabase.from('clients').select('*').eq('slug', 'adoratta').single();
@@ -226,11 +228,11 @@ app.post('/campaigns/test', async (c) => {
 
   let products;
   try {
-    products = await fetchFeaturedProducts(limit);
+    products = await fetchCampaignProducts(newCount, bestCount);
   } catch (e: any) {
     return c.json({ error: 'Erro ao buscar produtos no WooCommerce.', detail: String(e?.message ?? e) }, 502);
   }
-  if (!products.length) return c.json({ error: 'Nenhum produto em destaque encontrado na loja.' }, 404);
+  if (!products.length) return c.json({ error: 'Nenhum produto encontrado na loja.' }, 404);
 
   const origin = new URL(c.req.url).origin;
   const html = renderCampaignHtml({
