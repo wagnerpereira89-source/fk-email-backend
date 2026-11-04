@@ -1,12 +1,13 @@
 // Entrada do backend (Hono rodando como Serverless Function na Vercel).
 import { Hono } from 'hono';
 import { handle } from '@hono/node-server/vercel';
-import { getSupabase, hasSupabaseEnv } from '../src/db.js';
+import { getSupabase, hasSupabaseEnv, fetchAll } from '../src/db.js';
 import { sendEmail, hasSesEnv } from '../src/ses.js';
 import { fetchOrdersPage, fetchCampaignProducts, fetchOrdersAfter, hasWooEnv } from '../src/woo.js';
 import { renderCampaignHtml } from '../src/template.js';
 import { unsubUrl, verifyEmail } from '../src/sign.js';
 import { PIXEL_GIF, addUtm, runPool } from '../src/track.js';
+import { ADMIN_HTML } from '../src/admin.js';
 
 // Permite ate 60s por invocacao (importacao percorre varias paginas).
 export const maxDuration = 60;
@@ -20,7 +21,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.2.0',
+    version: '0.3.0',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -265,6 +266,43 @@ function authOk(c: any): boolean {
   return !!process.env.IMPORT_TOKEN && token === process.env.IMPORT_TOKEN;
 }
 
+async function cnt(q: any): Promise<number> {
+  const { count, error } = await q;
+  return error ? 0 : count || 0;
+}
+
+// PAINEL: GET /api/admin  (pagina HTML; a propria pagina pede o token)
+app.get('/admin', (c) => c.html(ADMIN_HTML));
+
+// ESTATISTICAS: GET /api/stats?token=XXX
+app.get('/stats', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const supabase = getSupabase();
+  const { data: client } = await supabase.from('clients').select('id').eq('slug', 'adoratta').single();
+  if (!client) return c.json({ error: 'Cliente nao encontrado.' }, 500);
+  const cid = client.id;
+  const total = await cnt(supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('client_id', cid));
+  const subscribed = await cnt(supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('client_id', cid).eq('status', 'subscribed'));
+  const unsubscribed = await cnt(supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('client_id', cid).eq('status', 'unsubscribed'));
+  const suppressed = await cnt(supabase.from('suppressions').select('*', { count: 'exact', head: true }).eq('client_id', cid));
+  return c.json({ ok: true, total, subscribed, unsubscribed, suppressed });
+});
+
+// LISTAR CAMPANHAS: GET /api/campaigns?token=XXX
+app.get('/campaigns', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const supabase = getSupabase();
+  const { data: client } = await supabase.from('clients').select('id').eq('slug', 'adoratta').single();
+  if (!client) return c.json({ error: 'Cliente nao encontrado.' }, 500);
+  const { data } = await supabase
+    .from('campaigns')
+    .select('id,subject,status,sent_at,created_at')
+    .eq('client_id', client.id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  return c.json({ ok: true, campaigns: data || [] });
+});
+
 // ----------------------------------------------------------------
 // CRIAR CAMPANHA: POST /api/campaigns?token=XXX
 // body: { subject, intro?, newCount?, bestCount? }
@@ -324,17 +362,21 @@ app.post('/campaigns/:id/send-batch', async (c) => {
   const { data: camp, error: cErr } = await supabase.from('campaigns').select('*').eq('id', id).single();
   if (cErr || !camp) return c.json({ error: 'Campanha nao encontrada.' }, 404);
 
-  // contatos inscritos do cliente
-  const { data: contacts } = await supabase
-    .from('contacts').select('id,email,name').eq('client_id', camp.client_id).eq('status', 'subscribed');
-  const { data: already } = await supabase
-    .from('campaign_sends').select('contact_id').eq('campaign_id', id);
-  const { data: supp } = await supabase
-    .from('suppressions').select('email').eq('client_id', camp.client_id);
+  // contatos inscritos do cliente (paginando pra pegar TODOS)
+  const contacts = await fetchAll<{ id: string; email: string; name: string | null }>((f, t) =>
+    supabase.from('contacts').select('id,email,name')
+      .eq('client_id', camp.client_id).eq('status', 'subscribed').range(f, t)
+  );
+  const already = await fetchAll<{ contact_id: string }>((f, t) =>
+    supabase.from('campaign_sends').select('contact_id').eq('campaign_id', id).range(f, t)
+  );
+  const supp = await fetchAll<{ email: string }>((f, t) =>
+    supabase.from('suppressions').select('email').eq('client_id', camp.client_id).range(f, t)
+  );
 
-  const sentSet = new Set((already || []).map((r) => r.contact_id));
-  const suppSet = new Set((supp || []).map((r) => r.email));
-  const todoAll = (contacts || []).filter((ct) => !sentSet.has(ct.id) && !suppSet.has(ct.email));
+  const sentSet = new Set(already.map((r) => r.contact_id));
+  const suppSet = new Set(supp.map((r) => String(r.email).toLowerCase()));
+  const todoAll = contacts.filter((ct) => !sentSet.has(ct.id) && !suppSet.has(String(ct.email).toLowerCase()));
   const batch = todoAll.slice(0, limit);
 
   const products = Array.isArray(camp.products) ? camp.products : [];
@@ -453,12 +495,13 @@ app.get('/campaigns/:id/report', async (c) => {
   const { data: camp, error: cErr } = await supabase.from('campaigns').select('*').eq('id', id).single();
   if (cErr || !camp) return c.json({ error: 'Campanha nao encontrada.' }, 404);
 
-  // metricas de envio
-  const { data: sends } = await supabase
-    .from('campaign_sends')
-    .select('contact_id,status,opened_at,clicked_at')
-    .eq('campaign_id', id);
-  const rows = sends || [];
+  // metricas de envio (paginando pra pegar TODOS)
+  const rows = await fetchAll<{ contact_id: string; status: string; opened_at: string | null; clicked_at: string | null }>(
+    (f, t) =>
+      supabase.from('campaign_sends')
+        .select('contact_id,status,opened_at,clicked_at')
+        .eq('campaign_id', id).range(f, t)
+  );
   const delivered = rows.filter((r) => r.status === 'sent').length;
   const opens = rows.filter((r) => r.opened_at).length;
   const clicks = rows.filter((r) => r.clicked_at).length;
