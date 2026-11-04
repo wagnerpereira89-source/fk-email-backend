@@ -112,6 +112,7 @@ export const ADMIN_HTML = `<!doctype html>
 const BASE = location.origin;
 let LIST_ROWS = [];   // dados atuais do painel de lista
 let LIST_COLS = [];   // colunas atuais
+let SUBS = 0;         // total de inscritos (pro progresso das campanhas)
 
 function token(){ return localStorage.getItem('fk_token') || ''; }
 function setToken(t){ localStorage.setItem('fk_token', t); }
@@ -206,6 +207,7 @@ async function loadCamps(){
   const box = document.getElementById('camps');
   try{
     const list = await api('/api/campaigns');
+    SUBS = list.subscribed || 0;
     const arr = list.campaigns || [];
     if(!arr.length){ box.innerHTML = '<div class="hint">Nenhuma campanha ainda.</div>'; return; }
     box.innerHTML = arr.map(renderCamp).join('');
@@ -213,8 +215,13 @@ async function loadCamps(){
 }
 function renderCamp(c){
   const data = c.sent_at ? ('enviada em ' + dt(c.sent_at)) : ('criada em ' + dt(c.created_at));
+  const sent = c.sent || 0;
+  const faltam = Math.max(0, SUBS - sent);
+  const pct = SUBS ? Math.round(sent / SUBS * 100) : 0;
+  const prog = '<div class="meta" style="margin-top:6px">Recebidos: <b>'+sent+'</b> de '+SUBS+' inscritos · faltam <b>'+faltam+'</b> ('+pct+'%)'
+    + '<div style="background:#eee;border-radius:6px;height:7px;margin-top:5px;overflow:hidden"><div style="background:var(--green);height:7px;width:'+pct+'%"></div></div></div>';
   return '<div class="camp" id="camp-'+c.id+'">'
-    + '<div class="top"><div><div class="sub">'+esc(c.subject)+'</div><div class="meta">'+data+'</div></div>'
+    + '<div class="top"><div><div class="sub">'+esc(c.subject)+'</div><div class="meta">'+data+'</div>'+prog+'</div>'
     + '<span class="badge">'+esc(c.status||'')+'</span></div>'
     + '<div class="row" style="margin-top:10px">'
     + 'Enviar lote de <input type="number" id="lim-'+c.id+'" value="150" style="width:90px"/> '

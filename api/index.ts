@@ -21,13 +21,14 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.3.1',
+    version: '0.3.3',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
       sesRegion: process.env.SES_REGION || '(default) us-east-2',
       woo: hasWooEnv(),
       importToken: !!process.env.IMPORT_TOKEN,
+      monitor: !!process.env.MONITOR_EMAIL,
     },
   })
 );
@@ -300,7 +301,20 @@ app.get('/campaigns', async (c) => {
     .eq('client_id', client.id)
     .order('created_at', { ascending: false })
     .limit(50);
-  return c.json({ ok: true, campaigns: data || [] });
+
+  const subscribed = await cnt(
+    supabase.from('contacts').select('*', { count: 'exact', head: true })
+      .eq('client_id', client.id).eq('status', 'subscribed')
+  );
+
+  const campaigns = [];
+  for (const camp of data || []) {
+    const sent = await cnt(
+      supabase.from('campaign_sends').select('*', { count: 'exact', head: true }).eq('campaign_id', camp.id)
+    );
+    campaigns.push({ ...camp, sent });
+  }
+  return c.json({ ok: true, campaigns, subscribed });
 });
 
 // LISTAR CONTATOS: GET /api/contacts?token=XXX&status=subscribed|unsubscribed|all&limit&offset
@@ -493,8 +507,33 @@ app.post('/campaigns/:id/send-batch', async (c) => {
     await supabase.from('campaigns').update({ sent_at: new Date().toISOString() }).eq('id', id);
   }
 
+  // Copia de monitoramento: manda o mesmo e-mail pro MONITOR_EMAIL (pra voce
+  // acompanhar como esta chegando). Nao conta nas metricas.
+  let monitorSent = false;
+  const monitor = (process.env.MONITOR_EMAIL || '').trim();
+  if (monitor && sent > 0) {
+    try {
+      const html = renderCampaignHtml({
+        storeName: camp.from_name,
+        storeUrl: process.env.WOO_URL || 'https://adorattab.com.br',
+        intro: camp.intro || '',
+        products,
+        unsubscribeUrl: unsubUrl(origin, monitor),
+      });
+      await sendEmail({
+        to: monitor,
+        fromName: camp.from_name,
+        fromEmail: camp.from_email,
+        replyTo: null,
+        subject: '[cópia] ' + camp.subject,
+        html,
+      });
+      monitorSent = true;
+    } catch (_e) { /* copia e best-effort */ }
+  }
+
   const remaining = todoAll.length - batch.length;
-  return c.json({ ok: true, campaignId: id, sentThisRun: sent, failed, remaining });
+  return c.json({ ok: true, campaignId: id, sentThisRun: sent, failed, remaining, monitorSent });
 });
 
 // ----------------------------------------------------------------
