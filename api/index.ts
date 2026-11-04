@@ -1,8 +1,8 @@
 // Entrada do backend (Hono rodando como Serverless Function na Vercel).
 import { Hono } from 'hono';
 import { handle } from '@hono/node-server/vercel';
-import { getSupabase, hasSupabaseEnv } from '../src/db';
-import { sendEmail, hasSesEnv } from '../src/ses';
+import { getSupabase, hasSupabaseEnv } from '../src/db.js';
+import { sendEmail, hasSesEnv } from '../src/ses.js';
 
 const app = new Hono().basePath('/api');
 
@@ -13,7 +13,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.1.2',
+    version: '0.1.3',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
