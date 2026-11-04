@@ -3,7 +3,9 @@ import { Hono } from 'hono';
 import { handle } from '@hono/node-server/vercel';
 import { getSupabase, hasSupabaseEnv } from '../src/db.js';
 import { sendEmail, hasSesEnv } from '../src/ses.js';
-import { fetchOrdersPage, hasWooEnv } from '../src/woo.js';
+import { fetchOrdersPage, fetchFeaturedProducts, hasWooEnv } from '../src/woo.js';
+import { renderCampaignHtml } from '../src/template.js';
+import { unsubUrl, verifyEmail } from '../src/sign.js';
 
 // Permite ate 60s por invocacao (importacao percorre varias paginas).
 export const maxDuration = 60;
@@ -17,7 +19,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.1.4',
+    version: '0.1.5',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -164,6 +166,94 @@ app.post('/import/woo', async (c) => {
     hasMore,
     nextStartPage: hasMore ? page : null,
   });
+});
+
+// Descadastro: GET /api/unsubscribe?e=email&t=token  (link do rodape do e-mail)
+app.get('/unsubscribe', async (c) => {
+  const email = (c.req.query('e') || '').toLowerCase().trim();
+  const token = c.req.query('t') || '';
+  const page = (titulo: string, msg: string) =>
+    c.html(
+      `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+       <body style="font-family:Arial,sans-serif;background:#f4f1ee;margin:0">
+         <div style="max-width:460px;margin:60px auto;background:#fff;border-radius:16px;padding:40px 28px;text-align:center">
+           <h2 style="color:#354734;margin:0 0 12px">${titulo}</h2>
+           <p style="color:#555;font-size:15px;line-height:1.5;margin:0">${msg}</p>
+         </div>
+       </body></html>`
+    );
+
+  if (!email || !verifyEmail(email, token)) {
+    return page('Link inválido', 'Este link de descadastro não é válido. Se precisar, responda o e-mail que a gente resolve.');
+  }
+
+  try {
+    const supabase = getSupabase();
+    const { data: client } = await supabase.from('clients').select('id').eq('slug', 'adoratta').single();
+    if (client) {
+      await supabase.from('contacts').update({ status: 'unsubscribed' })
+        .eq('client_id', client.id).eq('email', email);
+      await supabase.from('suppressions')
+        .upsert({ client_id: client.id, email, reason: 'unsubscribe' },
+                { onConflict: 'client_id,email', ignoreDuplicates: true });
+    }
+  } catch (_e) {
+    // mesmo se der erro no banco, mostra a confirmacao pro usuario (reprocessa depois)
+  }
+
+  return page('Pronto! 💜', 'Você foi descadastrado e não receberá mais estes e-mails. Sentiremos sua falta!');
+});
+
+// Campanha de TESTE: POST /api/campaigns/test?token=XXX  { "to": "voce@email.com", "intro"?, "subject"?, "limit"? }
+// Monta o e-mail real com os produtos em destaque e manda pra UM endereco.
+app.post('/campaigns/test', async (c) => {
+  const token = c.req.query('token') || c.req.header('x-import-token');
+  if (!process.env.IMPORT_TOKEN || token !== process.env.IMPORT_TOKEN) {
+    return c.json({ error: 'Nao autorizado (token invalido).' }, 401);
+  }
+
+  const body = await c.req.json().catch(() => ({} as any));
+  const to = (body?.to ?? '').trim();
+  if (!to) return c.json({ error: 'Faltou o campo "to".' }, 400);
+
+  const intro = body?.intro || 'Separamos uns queridinhos que a gente sabe que você vai amar 💜';
+  const subject = body?.subject || 'Novidades que você vai amar 💜';
+  const limit = Math.min(Math.max(Number(body?.limit || 6), 1), 12);
+
+  const supabase = getSupabase();
+  const { data: client, error } = await supabase.from('clients').select('*').eq('slug', 'adoratta').single();
+  if (error || !client) return c.json({ error: 'Cliente "adoratta" nao encontrado.', detail: error?.message }, 500);
+
+  let products;
+  try {
+    products = await fetchFeaturedProducts(limit);
+  } catch (e: any) {
+    return c.json({ error: 'Erro ao buscar produtos no WooCommerce.', detail: String(e?.message ?? e) }, 502);
+  }
+  if (!products.length) return c.json({ error: 'Nenhum produto em destaque encontrado na loja.' }, 404);
+
+  const origin = new URL(c.req.url).origin;
+  const html = renderCampaignHtml({
+    storeName: client.from_name,
+    storeUrl: process.env.WOO_URL || 'https://adorattab.com.br',
+    intro,
+    products,
+    unsubscribeUrl: unsubUrl(origin, to),
+  });
+
+  try {
+    const messageId = await sendEmail({
+      to,
+      fromName: client.from_name,
+      fromEmail: client.from_email,
+      replyTo: client.reply_to,
+      subject,
+      html,
+    });
+    return c.json({ ok: true, messageId, productsUsed: products.length, sentTo: to });
+  } catch (e: any) {
+    return c.json({ error: 'Falha ao enviar pelo SES.', detail: String(e?.message ?? e) }, 500);
+  }
 });
 
 export default handle(app);

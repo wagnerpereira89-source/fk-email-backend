@@ -40,3 +40,45 @@ export async function fetchOrdersPage(page: number, perPage: number): Promise<Wo
   }
   return out;
 }
+
+// ---------------------------------------------------------------
+// PRODUTOS (pra montar o e-mail)
+// ---------------------------------------------------------------
+export interface WooProduct {
+  id: number;
+  name: string;
+  permalink: string;
+  image: string | null;
+  price: string;              // ex: "37.50"
+  regularPrice: string | null; // preenchido quando em promocao
+  onSale: boolean;
+}
+
+async function wooGet(qs: string): Promise<any[]> {
+  const base = (process.env.WOO_URL || '').replace(/\/+$/, '');
+  const res = await fetch(`${base}/wp-json/wc/v3/products?${qs}`, {
+    headers: { Authorization: wooAuthHeader() },
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`WooCommerce respondeu ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return (await res.json()) as any[];
+}
+
+// Busca produtos em DESTAQUE (featured). Se nao houver, cai pros mais populares.
+export async function fetchFeaturedProducts(limit: number): Promise<WooProduct[]> {
+  let list = await wooGet(`featured=true&status=publish&per_page=${limit}&orderby=date&order=desc`);
+  if (!list.length) {
+    list = await wooGet(`status=publish&per_page=${limit}&orderby=popularity&order=desc`);
+  }
+  return list.map((p) => ({
+    id: Number(p.id),
+    name: String(p.name || ''),
+    permalink: String(p.permalink || ''),
+    image: p?.images?.[0]?.src ? String(p.images[0].src) : null,
+    price: String(p.price || p.regular_price || ''),
+    regularPrice: p.on_sale && p.regular_price ? String(p.regular_price) : null,
+    onSale: !!p.on_sale,
+  }));
+}
