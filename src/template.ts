@@ -70,16 +70,17 @@ export function renderCampaignHtml(a: CampaignArgs): string {
   <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
   <style>
     :root { color-scheme: light only; supported-color-schemes: light only; }
-    /* Dark mode do Outlook: mantem o verde e o creme */
+    /* Dark mode do Outlook: mantem o verde, o branco de fora e o creme do template */
     [data-ogsc] .fk-bar, [data-ogsb] .fk-bar { background-color: ${GREEN} !important; }
     [data-ogsc] .fk-btn, [data-ogsb] .fk-btn { background-color: ${GREEN} !important; color:#ffffff !important; }
-    [data-ogsc] body, [data-ogsb] body { background-color: ${CREAM} !important; }
+    [data-ogsc] body, [data-ogsb] body { background-color: #ffffff !important; }
+    [data-ogsc] .fk-template, [data-ogsb] .fk-template { background-color: ${CREAM} !important; }
   </style>
 </head>
-<body style="margin:0;padding:0;background-color:${CREAM};font-family:${FONT}">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${CREAM}">
+<body style="margin:0;padding:0;background-color:#ffffff;font-family:${FONT}">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff">
     <tr><td align="center" style="padding:0 0 24px">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%">
+      <table role="presentation" class="fk-template" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="${CREAM}" style="max-width:600px;width:100%;background-color:${CREAM}">
 
         <!-- FAIXA: 20% OFF no Pix -->
         <tr><td class="fk-bar" bgcolor="${GREEN}" style="background-color:${GREEN};padding:12px;text-align:center">
@@ -92,7 +93,7 @@ export function renderCampaignHtml(a: CampaignArgs): string {
         <tr><td style="padding:26px 20px 8px;text-align:center">
           <a href="${a.storeUrl}">
             <img src="${LOGO_URL}" alt="${a.storeName}" width="220"
-                 style="display:block;margin:0 auto;width:220px;max-width:70%;height:auto;border:0" />
+                 style="display:block;margin:0 auto;width:220px;max-width:42%;height:auto;border:0" />
           </a>
         </td></tr>
 
