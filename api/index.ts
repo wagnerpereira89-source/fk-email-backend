@@ -21,7 +21,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.3.0',
+    version: '0.3.1',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -301,6 +301,69 @@ app.get('/campaigns', async (c) => {
     .order('created_at', { ascending: false })
     .limit(50);
   return c.json({ ok: true, campaigns: data || [] });
+});
+
+// LISTAR CONTATOS: GET /api/contacts?token=XXX&status=subscribed|unsubscribed|all&limit&offset
+app.get('/contacts', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const status = c.req.query('status') || 'all';
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 500), 1), 1000);
+  const offset = Math.max(Number(c.req.query('offset') || 0), 0);
+  const supabase = getSupabase();
+  const { data: client } = await supabase.from('clients').select('id').eq('slug', 'adoratta').single();
+  if (!client) return c.json({ error: 'Cliente nao encontrado.' }, 500);
+
+  let q = supabase.from('contacts')
+    .select('email,name,status,source,created_at')
+    .eq('client_id', client.id)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (status !== 'all') q = q.eq('status', status);
+
+  const { data, error } = await q;
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ ok: true, contacts: data || [], count: (data || []).length });
+});
+
+// LISTAR SUPRESSOES: GET /api/suppressions?token=XXX
+app.get('/suppressions', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 500), 1), 1000);
+  const offset = Math.max(Number(c.req.query('offset') || 0), 0);
+  const supabase = getSupabase();
+  const { data: client } = await supabase.from('clients').select('id').eq('slug', 'adoratta').single();
+  if (!client) return c.json({ error: 'Cliente nao encontrado.' }, 500);
+  const { data, error } = await supabase.from('suppressions')
+    .select('email,reason,created_at')
+    .eq('client_id', client.id)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ ok: true, suppressions: data || [] });
+});
+
+// PRA QUEM FOI ENVIADO: GET /api/campaigns/:id/recipients?token=XXX&limit&offset
+app.get('/campaigns/:id/recipients', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const id = c.req.param('id');
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 500), 1), 1000);
+  const offset = Math.max(Number(c.req.query('offset') || 0), 0);
+  const supabase = getSupabase();
+  const { data, error } = await supabase.from('campaign_sends')
+    .select('status,opened_at,clicked_at,sent_at,contacts(email,name)')
+    .eq('campaign_id', id)
+    .order('sent_at', { ascending: false, nullsFirst: false })
+    .range(offset, offset + limit - 1);
+  if (error) return c.json({ error: error.message }, 500);
+  const recipients = (data || []).map((r: any) => ({
+    email: r.contacts?.email || '',
+    name: r.contacts?.name || '',
+    status: r.status,
+    opened: !!r.opened_at,
+    clicked: !!r.clicked_at,
+    sent_at: r.sent_at,
+  }));
+  return c.json({ ok: true, recipients });
 });
 
 // ----------------------------------------------------------------

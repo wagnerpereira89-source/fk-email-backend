@@ -13,11 +13,12 @@ export const ADMIN_HTML = `<!doctype html>
   body { margin:0; font-family:'Open Sans',Arial,sans-serif; background:#f3f4f6; color:#222; }
   header { background:var(--green); color:#fff; padding:16px 20px; font-weight:700; font-size:18px; display:flex; justify-content:space-between; align-items:center; }
   header .sair { font-size:12px; font-weight:600; color:#cbd5c5; cursor:pointer; text-decoration:underline; }
-  .wrap { max-width:900px; margin:0 auto; padding:20px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; padding:20px 16px 60px; }
   .card { background:#fff; border-radius:14px; box-shadow:0 1px 4px rgba(0,0,0,.08); padding:20px; margin-bottom:18px; }
   .card h2 { margin:0 0 14px; font-size:16px; color:var(--green); }
   .stats { display:flex; gap:12px; flex-wrap:wrap; }
-  .stat { flex:1; min-width:120px; background:var(--cream); border-radius:12px; padding:14px; text-align:center; }
+  .stat { flex:1; min-width:120px; background:var(--cream); border-radius:12px; padding:14px; text-align:center; cursor:pointer; border:2px solid transparent; }
+  .stat:hover { border-color:var(--green); }
   .stat b { display:block; font-size:26px; color:var(--green); }
   .stat span { font-size:12px; color:#777; }
   label { display:block; font-size:13px; font-weight:600; margin:10px 0 4px; }
@@ -25,6 +26,7 @@ export const ADMIN_HTML = `<!doctype html>
   textarea { min-height:60px; resize:vertical; }
   button { background:var(--green); color:#fff; border:none; border-radius:8px; padding:10px 18px; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit; }
   button.sec { background:#fff; color:var(--green); border:1px solid var(--green); }
+  button.lnk { background:none; color:var(--green); border:none; padding:0; text-decoration:underline; font-weight:600; }
   button:disabled { opacity:.5; cursor:default; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .camp { border:1px solid #eee; border-radius:12px; padding:14px; margin-bottom:12px; }
@@ -40,12 +42,17 @@ export const ADMIN_HTML = `<!doctype html>
   .metric span { font-size:11px; color:#888; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; }
+  .pill { font-size:11px; font-weight:700; padding:2px 7px; border-radius:20px; }
+  .pill.y { background:#e3f4e6; color:#1a7f37; }
+  .pill.n { background:#f0f0f0; color:#999; }
   .msg { font-size:13px; margin-top:8px; }
   .msg.ok { color:#1a7f37; }
   .msg.err { color:#b42318; }
   .gate { max-width:360px; margin:80px auto; }
   .hint { font-size:12px; color:#999; margin-top:6px; }
   .hidden { display:none; }
+  .closex { float:right; cursor:pointer; color:#999; font-weight:700; }
+  .scroll { max-height:420px; overflow:auto; }
 </style>
 </head>
 <body>
@@ -70,6 +77,16 @@ export const ADMIN_HTML = `<!doctype html>
     <div class="card">
       <h2>Contatos</h2>
       <div class="stats" id="stats"><div class="stat"><b>…</b><span>carregando</span></div></div>
+      <div class="hint">Clique num quadro pra ver a lista.</div>
+    </div>
+
+    <!-- painel de lista (contatos / suprimidos) -->
+    <div class="card hidden" id="listCard">
+      <span class="closex" onclick="closeList()">✕</span>
+      <h2 id="listTitle">Lista</h2>
+      <input id="listSearch" placeholder="buscar por e-mail ou nome…" oninput="filterList()" />
+      <div class="hint" id="listInfo"></div>
+      <div class="scroll"><div id="listBody">carregando…</div></div>
     </div>
 
     <div class="card">
@@ -78,7 +95,7 @@ export const ADMIN_HTML = `<!doctype html>
       <input id="subject" value="Novidades que você vai amar 🩷" />
       <label>Texto de abertura</label>
       <textarea id="intro">Separamos uns queridinhos que a gente sabe que você vai amar 🩷</textarea>
-      <div class="hint">Vai com 4 novidades + 4 mais vendidos (os produtos são buscados na hora de criar).</div>
+      <div class="hint">Vai com 4 novidades + 4 mais vendidos (buscados na hora de criar).</div>
       <div class="row" style="margin-top:12px"><button id="btnCreate" onclick="createCampaign()">Criar campanha</button></div>
       <div id="createMsg" class="msg"></div>
     </div>
@@ -93,6 +110,9 @@ export const ADMIN_HTML = `<!doctype html>
 
 <script>
 const BASE = location.origin;
+let LIST_ROWS = [];   // dados atuais do painel de lista
+let LIST_COLS = [];   // colunas atuais
+
 function token(){ return localStorage.getItem('fk_token') || ''; }
 function setToken(t){ localStorage.setItem('fk_token', t); }
 function logout(){ localStorage.removeItem('fk_token'); show(); }
@@ -106,6 +126,7 @@ async function api(path, opts){
 }
 function brl(v){ return 'R$ ' + Number(v||0).toFixed(2).replace('.',','); }
 function esc(s){ return String(s==null?'':s).replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+function dt(s){ return s ? new Date(s).toLocaleString('pt-BR') : '-'; }
 
 function show(){
   if(!token()){ document.getElementById('gate').classList.remove('hidden'); document.getElementById('app').classList.add('hidden'); }
@@ -114,21 +135,59 @@ function show(){
 async function login(){
   setToken(document.getElementById('tok').value.trim());
   try { await api('/api/stats'); show(); }
-  catch(e){ document.getElementById('gateMsg').className='msg err'; document.getElementById('gateMsg').textContent='Token inválido.'; logout_keepGate(); }
+  catch(e){ document.getElementById('gateMsg').className='msg err'; document.getElementById('gateMsg').textContent='Token inválido.'; localStorage.removeItem('fk_token'); }
 }
-function logout_keepGate(){ localStorage.removeItem('fk_token'); }
-
 async function loadAll(){ loadStats(); loadCamps(); }
 
 async function loadStats(){
   try{
     const s = await api('/api/stats');
     document.getElementById('stats').innerHTML =
-      stat(s.total,'total') + stat(s.subscribed,'inscritos') + stat(s.unsubscribed,'descadastrados') + stat(s.suppressed,'suprimidos');
+      stat(s.total,'total','all') + stat(s.subscribed,'inscritos','subscribed')
+      + stat(s.unsubscribed,'descadastrados','unsubscribed') + stat(s.suppressed,'suprimidos','suppressed');
   }catch(e){ if(String(e.message)==='401') show(); }
 }
-function stat(n,l){ return '<div class="stat"><b>'+(n??0)+'</b><span>'+l+'</span></div>'; }
+function stat(n,l,kind){ return '<div class="stat" onclick="showList(\\''+kind+'\\',\\''+l+'\\')"><b>'+(n??0)+'</b><span>'+l+'</span></div>'; }
 
+// ---- painel de lista ----
+async function showList(kind, label){
+  const card = document.getElementById('listCard');
+  card.classList.remove('hidden');
+  document.getElementById('listTitle').textContent = 'Contatos: ' + label;
+  document.getElementById('listSearch').value = '';
+  document.getElementById('listBody').innerHTML = 'carregando…';
+  card.scrollIntoView({behavior:'smooth'});
+  try{
+    if(kind === 'suppressed'){
+      const r = await api('/api/suppressions');
+      LIST_COLS = [['email','E-mail'],['reason','Motivo'],['created_at','Data']];
+      LIST_ROWS = (r.suppressions||[]).map(x=>({email:x.email, reason:x.reason, created_at:dt(x.created_at)}));
+    } else {
+      const st = (kind==='all') ? 'all' : kind;
+      const r = await api('/api/contacts?status='+st);
+      LIST_COLS = [['email','E-mail'],['name','Nome'],['status','Status'],['created_at','Entrou em']];
+      LIST_ROWS = (r.contacts||[]).map(x=>({email:x.email, name:x.name||'-', status:x.status, created_at:dt(x.created_at)}));
+    }
+    renderList();
+  }catch(e){ document.getElementById('listBody').innerHTML = '<div class="msg err">Erro ao carregar.</div>'; }
+}
+function renderList(rows){
+  const data = rows || LIST_ROWS;
+  document.getElementById('listInfo').textContent = 'Mostrando ' + data.length + ' registro(s).';
+  if(!data.length){ document.getElementById('listBody').innerHTML = '<div class="hint">Nada aqui.</div>'; return; }
+  let h = '<table><tr>' + LIST_COLS.map(c=>'<th>'+c[1]+'</th>').join('') + '</tr>';
+  h += data.map(r=>'<tr>'+LIST_COLS.map(c=>'<td>'+esc(r[c[0]])+'</td>').join('')+'</tr>').join('');
+  h += '</table>';
+  document.getElementById('listBody').innerHTML = h;
+}
+function filterList(){
+  const q = document.getElementById('listSearch').value.toLowerCase();
+  if(!q){ renderList(); return; }
+  renderList(LIST_ROWS.filter(r => (String(r.email)+' '+String(r.name||'')).toLowerCase().includes(q)));
+}
+function closeList(){ document.getElementById('listCard').classList.add('hidden'); }
+
+// ---- campanhas ----
 async function createCampaign(){
   const btn = document.getElementById('btnCreate'); btn.disabled = true;
   const msg = document.getElementById('createMsg'); msg.className='msg'; msg.textContent='Criando…';
@@ -152,16 +211,16 @@ async function loadCamps(){
     box.innerHTML = arr.map(renderCamp).join('');
   }catch(e){ box.innerHTML = '<div class="msg err">Erro ao carregar.</div>'; }
 }
-
 function renderCamp(c){
-  const data = c.sent_at ? ('enviada em ' + new Date(c.sent_at).toLocaleString('pt-BR')) : ('criada em ' + new Date(c.created_at).toLocaleString('pt-BR'));
+  const data = c.sent_at ? ('enviada em ' + dt(c.sent_at)) : ('criada em ' + dt(c.created_at));
   return '<div class="camp" id="camp-'+c.id+'">'
     + '<div class="top"><div><div class="sub">'+esc(c.subject)+'</div><div class="meta">'+data+'</div></div>'
     + '<span class="badge">'+esc(c.status||'')+'</span></div>'
     + '<div class="row" style="margin-top:10px">'
     + 'Enviar lote de <input type="number" id="lim-'+c.id+'" value="150" style="width:90px"/> '
     + '<button onclick="sendBatch(\\''+c.id+'\\')">Disparar</button>'
-    + '<button class="sec" onclick="report(\\''+c.id+'\\')">Ver relatório</button>'
+    + '<button class="sec" onclick="report(\\''+c.id+'\\')">Relatório</button>'
+    + '<button class="sec" onclick="recipients(\\''+c.id+'\\')">Enviados</button>'
     + '<span class="msg" id="smsg-'+c.id+'"></span></div>'
     + '<div class="rep" id="rep-'+c.id+'"></div>'
     + '</div>';
@@ -172,7 +231,7 @@ async function sendBatch(id){
   const m = document.getElementById('smsg-'+id); m.className='msg'; m.textContent='Enviando…';
   try{
     const r = await api('/api/campaigns/'+id+'/send-batch?limit='+lim, { method:'POST' });
-    if(r.ok){ m.className='msg ok'; m.textContent='Enviados '+r.sentThisRun+' (falhas '+r.failed+'). Faltam '+r.remaining+'.'; }
+    if(r.ok){ m.className='msg ok'; m.textContent='Enviados '+r.sentThisRun+' (falhas '+r.failed+'). Faltam '+r.remaining+'.'; loadCamps(); }
     else { m.className='msg err'; m.textContent='Erro: '+(r.error||''); }
   }catch(e){ m.className='msg err'; m.textContent='Falhou.'; }
 }
@@ -190,13 +249,28 @@ async function report(id){
     if(r.topBuyers && r.topBuyers.length){
       html += '<table><tr><th>Quem comprou</th><th>Total</th></tr>'
         + r.topBuyers.map(b=>'<tr><td>'+esc(b.email)+'</td><td>'+brl(b.total)+'</td></tr>').join('') + '</table>';
-    } else {
-      html += '<div class="hint">Ainda sem compras registradas desta campanha.</div>';
-    }
+    } else { html += '<div class="hint">Ainda sem compras registradas desta campanha.</div>'; }
     box.innerHTML = html;
   }catch(e){ box.innerHTML = '<div class="msg err">Falhou.</div>'; }
 }
 function met(v,l){ return '<div class="metric"><b>'+v+'</b><span>'+l+'</span></div>'; }
+
+async function recipients(id){
+  const box = document.getElementById('rep-'+id);
+  box.classList.add('open'); box.innerHTML = 'carregando enviados…';
+  try{
+    const r = await api('/api/campaigns/'+id+'/recipients');
+    const arr = r.recipients || [];
+    if(!arr.length){ box.innerHTML = '<div class="hint">Ainda não foi enviado pra ninguém.</div>'; return; }
+    let html = '<div class="hint" style="margin-bottom:8px">'+arr.length+' envios</div>';
+    html += '<div class="scroll"><table><tr><th>E-mail</th><th>Abriu</th><th>Clicou</th><th>Enviado</th></tr>'
+      + arr.map(x=>'<tr><td>'+esc(x.email)+'</td>'
+        + '<td>'+pill(x.opened)+'</td><td>'+pill(x.clicked)+'</td>'
+        + '<td>'+dt(x.sent_at)+'</td></tr>').join('') + '</table></div>';
+    box.innerHTML = html;
+  }catch(e){ box.innerHTML = '<div class="msg err">Falhou.</div>'; }
+}
+function pill(b){ return b ? '<span class="pill y">sim</span>' : '<span class="pill n">não</span>'; }
 
 show();
 </script>
