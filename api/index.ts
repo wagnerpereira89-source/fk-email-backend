@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 import { handle } from '@hono/node-server/vercel';
 import { getSupabase, hasSupabaseEnv } from '../src/db.js';
 import { sendEmail, hasSesEnv } from '../src/ses.js';
-import { fetchOrdersPage, fetchCampaignProducts, hasWooEnv } from '../src/woo.js';
+import { fetchOrdersPage, fetchCampaignProducts, fetchOrdersAfter, hasWooEnv } from '../src/woo.js';
 import { renderCampaignHtml } from '../src/template.js';
 import { unsubUrl, verifyEmail } from '../src/sign.js';
+import { PIXEL_GIF, addUtm, runPool } from '../src/track.js';
 
 // Permite ate 60s por invocacao (importacao percorre varias paginas).
 export const maxDuration = 60;
@@ -19,7 +20,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.1.7',
+    version: '0.2.0',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -256,6 +257,261 @@ app.post('/campaigns/test', async (c) => {
   } catch (e: any) {
     return c.json({ error: 'Falha ao enviar pelo SES.', detail: String(e?.message ?? e) }, 500);
   }
+});
+
+// Verifica o token de admin (query ?token= ou header x-import-token).
+function authOk(c: any): boolean {
+  const token = c.req.query('token') || c.req.header('x-import-token');
+  return !!process.env.IMPORT_TOKEN && token === process.env.IMPORT_TOKEN;
+}
+
+// ----------------------------------------------------------------
+// CRIAR CAMPANHA: POST /api/campaigns?token=XXX
+// body: { subject, intro?, newCount?, bestCount? }
+// Congela os produtos (4+4) no momento da criacao.
+// ----------------------------------------------------------------
+app.post('/campaigns', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const body = await c.req.json().catch(() => ({} as any));
+  const subject = (body?.subject ?? '').trim() || 'Novidades que você vai amar 🩷';
+  const intro = body?.intro || 'Separamos uns queridinhos que a gente sabe que você vai amar 🩷';
+  const newCount = Math.min(Math.max(Number(body?.newCount || 4), 1), 8);
+  const bestCount = Math.min(Math.max(Number(body?.bestCount || 4), 1), 8);
+
+  const supabase = getSupabase();
+  const { data: client, error: cErr } = await supabase.from('clients').select('*').eq('slug', 'adoratta').single();
+  if (cErr || !client) return c.json({ error: 'Cliente "adoratta" nao encontrado.' }, 500);
+
+  let products;
+  try {
+    products = await fetchCampaignProducts(newCount, bestCount);
+  } catch (e: any) {
+    return c.json({ error: 'Erro ao buscar produtos.', detail: String(e?.message ?? e) }, 502);
+  }
+  if (!products.length) return c.json({ error: 'Nenhum produto encontrado.' }, 404);
+
+  const { data: camp, error: insErr } = await supabase
+    .from('campaigns')
+    .insert({
+      client_id: client.id,
+      name: subject,
+      subject,
+      intro,
+      products,
+      from_name: client.from_name,
+      from_email: client.from_email,
+      status: 'sending',
+    })
+    .select('id')
+    .single();
+  if (insErr || !camp) return c.json({ error: 'Erro ao criar campanha.', detail: insErr?.message }, 500);
+
+  return c.json({ ok: true, campaignId: camp.id, productsUsed: products.length });
+});
+
+// ----------------------------------------------------------------
+// ENVIAR LOTE: POST /api/campaigns/:id/send-batch?token=XXX&limit=200
+// Manda ate "limit" e-mails pra quem ainda nao recebeu essa campanha.
+// Chame todo dia (subindo o limit) pro aquecimento.
+// ----------------------------------------------------------------
+app.post('/campaigns/:id/send-batch', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const id = c.req.param('id');
+  const limit = Math.min(Math.max(Number(c.req.query('limit') || 200), 1), 1000);
+  const origin = new URL(c.req.url).origin;
+  const supabase = getSupabase();
+
+  const { data: camp, error: cErr } = await supabase.from('campaigns').select('*').eq('id', id).single();
+  if (cErr || !camp) return c.json({ error: 'Campanha nao encontrada.' }, 404);
+
+  // contatos inscritos do cliente
+  const { data: contacts } = await supabase
+    .from('contacts').select('id,email,name').eq('client_id', camp.client_id).eq('status', 'subscribed');
+  const { data: already } = await supabase
+    .from('campaign_sends').select('contact_id').eq('campaign_id', id);
+  const { data: supp } = await supabase
+    .from('suppressions').select('email').eq('client_id', camp.client_id);
+
+  const sentSet = new Set((already || []).map((r) => r.contact_id));
+  const suppSet = new Set((supp || []).map((r) => r.email));
+  const todoAll = (contacts || []).filter((ct) => !sentSet.has(ct.id) && !suppSet.has(ct.email));
+  const batch = todoAll.slice(0, limit);
+
+  const products = Array.isArray(camp.products) ? camp.products : [];
+  let sent = 0;
+  let failed = 0;
+
+  await runPool(batch, 5, async (ct) => {
+    // cria o registro do envio pra ter um id (usado no rastreio)
+    const { data: sendRow, error: sErr } = await supabase
+      .from('campaign_sends')
+      .insert({ campaign_id: id, contact_id: ct.id, status: 'queued' })
+      .select('id')
+      .single();
+    if (sErr || !sendRow) { failed++; return; }
+
+    const sendId = sendRow.id;
+    const openPixelUrl = `${origin}/api/o/${sendId}.gif`;
+    const linkWrapper = (url: string) =>
+      `${origin}/api/c/${sendId}?u=${encodeURIComponent(addUtm(url, String(id)))}`;
+
+    const html = renderCampaignHtml({
+      storeName: camp.from_name,
+      storeUrl: process.env.WOO_URL || 'https://adorattab.com.br',
+      intro: camp.intro || '',
+      products,
+      unsubscribeUrl: unsubUrl(origin, ct.email),
+      openPixelUrl,
+      linkWrapper,
+    });
+
+    try {
+      const messageId = await sendEmail({
+        to: ct.email,
+        fromName: camp.from_name,
+        fromEmail: camp.from_email,
+        replyTo: null,
+        subject: camp.subject,
+        html,
+      });
+      await supabase.from('campaign_sends')
+        .update({ status: 'sent', ses_message_id: messageId ?? null, sent_at: new Date().toISOString() })
+        .eq('id', sendId);
+      sent++;
+    } catch (_e) {
+      await supabase.from('campaign_sends').update({ status: 'failed' }).eq('id', sendId);
+      failed++;
+    }
+  });
+
+  if (!camp.sent_at && sent > 0) {
+    await supabase.from('campaigns').update({ sent_at: new Date().toISOString() }).eq('id', id);
+  }
+
+  const remaining = todoAll.length - batch.length;
+  return c.json({ ok: true, campaignId: id, sentThisRun: sent, failed, remaining });
+});
+
+// ----------------------------------------------------------------
+// PIXEL DE ABERTURA: GET /api/o/:id.gif  (publico, chamado pelo e-mail)
+// ----------------------------------------------------------------
+app.get('/o/:id', async (c) => {
+  const raw = c.req.param('id') || '';
+  const sendId = raw.replace(/\.gif$/i, '');
+  try {
+    const supabase = getSupabase();
+    const { data: s } = await supabase
+      .from('campaign_sends').select('id,campaign_id,contact_id,opened_at').eq('id', sendId).single();
+    if (s) {
+      if (!s.opened_at) {
+        await supabase.from('campaign_sends').update({ opened_at: new Date().toISOString() }).eq('id', sendId);
+      }
+      await supabase.from('events').insert({
+        send_id: s.id, contact_id: s.contact_id, campaign_id: s.campaign_id, type: 'open',
+      });
+    }
+  } catch (_e) { /* nunca quebra o pixel */ }
+
+  return c.body(PIXEL_GIF, 200, {
+    'Content-Type': 'image/gif',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+  });
+});
+
+// ----------------------------------------------------------------
+// CLIQUE: GET /api/c/:id?u=<url>  (publico) -> registra e redireciona
+// ----------------------------------------------------------------
+app.get('/c/:id', async (c) => {
+  const sendId = c.req.param('id') || '';
+  const dest = c.req.query('u') || process.env.WOO_URL || 'https://adorattab.com.br';
+  try {
+    const supabase = getSupabase();
+    const { data: s } = await supabase
+      .from('campaign_sends').select('id,campaign_id,contact_id,clicked_at').eq('id', sendId).single();
+    if (s) {
+      if (!s.clicked_at) {
+        await supabase.from('campaign_sends').update({ clicked_at: new Date().toISOString() }).eq('id', sendId);
+      }
+      await supabase.from('events').insert({
+        send_id: s.id, contact_id: s.contact_id, campaign_id: s.campaign_id, type: 'click', url: dest,
+      });
+    }
+  } catch (_e) { /* nunca quebra o redirect */ }
+
+  return c.redirect(dest, 302);
+});
+
+// ----------------------------------------------------------------
+// RELATORIO: GET /api/campaigns/:id/report?token=XXX
+// Cruza os pedidos feitos depois do envio (por email) com quem recebeu.
+// ----------------------------------------------------------------
+app.get('/campaigns/:id/report', async (c) => {
+  if (!authOk(c)) return c.json({ error: 'Nao autorizado.' }, 401);
+  const id = c.req.param('id');
+  const supabase = getSupabase();
+
+  const { data: camp, error: cErr } = await supabase.from('campaigns').select('*').eq('id', id).single();
+  if (cErr || !camp) return c.json({ error: 'Campanha nao encontrada.' }, 404);
+
+  // metricas de envio
+  const { data: sends } = await supabase
+    .from('campaign_sends')
+    .select('contact_id,status,opened_at,clicked_at')
+    .eq('campaign_id', id);
+  const rows = sends || [];
+  const delivered = rows.filter((r) => r.status === 'sent').length;
+  const opens = rows.filter((r) => r.opened_at).length;
+  const clicks = rows.filter((r) => r.clicked_at).length;
+
+  // e-mails de quem recebeu
+  const contactIds = rows.map((r) => r.contact_id);
+  const emailSet = new Set<string>();
+  for (let i = 0; i < contactIds.length; i += 500) {
+    const chunk = contactIds.slice(i, i + 500);
+    const { data: cts } = await supabase.from('contacts').select('email').in('id', chunk);
+    for (const ct of cts || []) emailSet.add(String(ct.email).toLowerCase());
+  }
+
+  // pedidos feitos depois do envio
+  const since = camp.sent_at || camp.created_at;
+  const buyers = new Map<string, number>();
+  let revenue = 0;
+  let orders = 0;
+  if (hasWooEnv() && since) {
+    try {
+      let page = 1;
+      for (let guard = 0; guard < 30; guard++, page++) {
+        const list = await fetchOrdersAfter(since, page, 100);
+        for (const o of list) {
+          if (o.email && emailSet.has(o.email)) {
+            orders++;
+            revenue += o.total;
+            buyers.set(o.email, (buyers.get(o.email) || 0) + o.total);
+          }
+        }
+        if (list.length < 100) break;
+      }
+    } catch (_e) { /* se a loja falhar, devolve so as metricas de envio */ }
+  }
+
+  return c.json({
+    ok: true,
+    campaignId: id,
+    subject: camp.subject,
+    sentAt: camp.sent_at,
+    recipients: rows.length,
+    delivered,
+    opens,
+    clicks,
+    openRate: delivered ? +(opens / delivered * 100).toFixed(1) : 0,
+    clickRate: delivered ? +(clicks / delivered * 100).toFixed(1) : 0,
+    buyers: buyers.size,
+    orders,
+    revenue: +revenue.toFixed(2),
+    topBuyers: Array.from(buyers.entries())
+      .sort((a, b) => b[1] - a[1]).slice(0, 20)
+      .map(([email, total]) => ({ email, total: +total.toFixed(2) })),
+  });
 });
 
 export default handle(app);

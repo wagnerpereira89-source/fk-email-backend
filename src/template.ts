@@ -13,15 +13,18 @@ function formatBRL(v: string): string {
   return 'R$ ' + n.toFixed(2).replace('.', ',');
 }
 
-function productCell(p: WooProduct): string {
+type LinkWrapper = (url: string) => string;
+
+function productCell(p: WooProduct, wrap: LinkWrapper): string {
   const img = p.image || 'https://via.placeholder.com/280x350?text=Produto';
   const priceNow = formatBRL(p.price);
   const priceOld = p.onSale && p.regularPrice ? formatBRL(p.regularPrice) : '';
+  const link = wrap(p.permalink);
   return `
   <td width="50%" valign="top" style="padding:10px">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
       <tr><td>
-        <a href="${p.permalink}" style="text-decoration:none;color:inherit">
+        <a href="${link}" style="text-decoration:none;color:inherit">
           <img src="${img}" width="100%" alt="${p.name}"
                style="display:block;border-radius:12px;width:100%;max-width:280px;height:auto;margin:0 auto" />
         </a>
@@ -33,7 +36,7 @@ function productCell(p: WooProduct): string {
           <span style="color:#111;font-weight:700">${priceNow}</span>
         </div>
         <!--[if mso]><table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="${GREEN}" style="border-radius:8px"><![endif]-->
-        <a href="${p.permalink}"
+        <a href="${link}"
            style="display:inline-block;margin-top:10px;background-color:${GREEN};color:#ffffff;
                   text-decoration:none;font-weight:700;font-size:13px;padding:9px 20px;border-radius:8px;font-family:${FONT}">
           Comprar
@@ -50,13 +53,18 @@ export interface CampaignArgs {
   intro: string;
   products: WooProduct[];
   unsubscribeUrl: string;
+  openPixelUrl?: string;        // se presente, adiciona o pixel de abertura
+  linkWrapper?: LinkWrapper;    // envolve os links pro rastreio de clique (+ UTM)
 }
 
 export function renderCampaignHtml(a: CampaignArgs): string {
+  const wrap: LinkWrapper = a.linkWrapper || ((u) => u);
+  const storeLink = wrap(a.storeUrl);
+
   const rows: string[] = [];
   for (let i = 0; i < a.products.length; i += 2) {
-    const left = productCell(a.products[i]);
-    const right = a.products[i + 1] ? productCell(a.products[i + 1]) : '<td width="50%"></td>';
+    const left = productCell(a.products[i], wrap);
+    const right = a.products[i + 1] ? productCell(a.products[i + 1], wrap) : '<td width="50%"></td>';
     rows.push(`<tr>${left}${right}</tr>`);
   }
 
@@ -91,7 +99,7 @@ export function renderCampaignHtml(a: CampaignArgs): string {
 
         <!-- LOGO -->
         <tr><td style="padding:26px 20px 8px;text-align:center">
-          <a href="${a.storeUrl}">
+          <a href="${storeLink}">
             <img src="${LOGO_URL}" alt="${a.storeName}" width="220"
                  style="display:block;margin:0 auto;width:220px;max-width:42%;height:auto;border:0" />
           </a>
@@ -112,7 +120,7 @@ export function renderCampaignHtml(a: CampaignArgs): string {
         <!-- CTA GERAL -->
         <tr><td style="padding:14px 24px 28px;text-align:center">
           <!--[if mso]><table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="${GREEN}" style="border-radius:8px"><![endif]-->
-          <a href="${a.storeUrl}" class="fk-btn"
+          <a href="${storeLink}" class="fk-btn"
              style="display:inline-block;background-color:${GREEN};color:#ffffff;text-decoration:none;
                     font-family:${FONT};font-weight:700;font-size:15px;padding:13px 34px;border-radius:8px">
             Ver a loja completa
@@ -135,6 +143,7 @@ export function renderCampaignHtml(a: CampaignArgs): string {
       </table>
     </td></tr>
   </table>
+  ${a.openPixelUrl ? `<img src="${a.openPixelUrl}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0" />` : ''}
 </body>
 </html>`;
 }

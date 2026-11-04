@@ -116,3 +116,30 @@ export async function fetchCampaignProducts(newCount: number, bestCount: number)
   }
   return out;
 }
+
+export interface WooOrder {
+  id: number;
+  email: string;
+  total: number;
+  createdAt: string;
+}
+
+// Busca uma pagina de pedidos criados DEPOIS de uma data (ISO), pro relatorio de conversao.
+export async function fetchOrdersAfter(afterISO: string, page: number, perPage: number): Promise<WooOrder[]> {
+  const base = (process.env.WOO_URL || '').replace(/\/+$/, '');
+  const url =
+    `${base}/wp-json/wc/v3/orders` +
+    `?after=${encodeURIComponent(afterISO)}&per_page=${perPage}&page=${page}&status=any&orderby=date&order=asc`;
+  const res = await fetch(url, { headers: { Authorization: wooAuthHeader() } });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`WooCommerce respondeu ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const orders = (await res.json()) as any[];
+  return orders.map((o) => ({
+    id: Number(o.id),
+    email: String(o?.billing?.email || '').trim().toLowerCase(),
+    total: Number(o?.total || 0),
+    createdAt: String(o?.date_created || ''),
+  }));
+}
