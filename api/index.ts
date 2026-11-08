@@ -21,7 +21,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.3.3',
+    version: '0.4.0',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),
@@ -608,8 +608,11 @@ app.get('/campaigns/:id/report', async (c) => {
   const opens = rows.filter((r) => r.opened_at).length;
   const clicks = rows.filter((r) => r.clicked_at).length;
 
-  // e-mails de quem recebeu
-  const contactIds = rows.map((r) => r.contact_id);
+  // ATRIBUICAO REAL: so conta compra de quem CLICOU no e-mail (quem clicou no
+  // link rastreado veio pra loja pelo e-mail e leva utm_source=email, batendo
+  // com a origem "email" do WooCommerce). Cliente que comprou por conta propria
+  // (sem clicar) NAO entra, pra nao superestimar.
+  const contactIds = rows.filter((r) => r.clicked_at).map((r) => r.contact_id);
   const emailSet = new Set<string>();
   for (let i = 0; i < contactIds.length; i += 500) {
     const chunk = contactIds.slice(i, i + 500);
@@ -653,6 +656,7 @@ app.get('/campaigns/:id/report', async (c) => {
     buyers: buyers.size,
     orders,
     revenue: +revenue.toFixed(2),
+    attribution: 'click', // compras atribuidas = clicaram no e-mail e compraram
     topBuyers: Array.from(buyers.entries())
       .sort((a, b) => b[1] - a[1]).slice(0, 20)
       .map(([email, total]) => ({ email, total: +total.toFixed(2) })),

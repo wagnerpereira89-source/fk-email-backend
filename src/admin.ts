@@ -251,12 +251,13 @@ async function report(id){
     if(!r.ok){ box.innerHTML = '<div class="msg err">Erro: '+(r.error||'')+'</div>'; return; }
     let html = '<div class="metrics">'
       + met(r.recipients,'enviados') + met(r.opens,'aberturas ('+r.openRate+'%)')
-      + met(r.clicks,'cliques ('+r.clickRate+'%)') + met(r.buyers,'compraram')
+      + met(r.clicks,'cliques ('+r.clickRate+'%)') + met(r.buyers,'compraram (do e-mail)')
       + met(brl(r.revenue),'faturamento') + '</div>';
+    html += '<div class="hint" style="margin:-4px 0 10px">Compras contadas só de quem <b>clicou</b> no e-mail e comprou (atribuição real, igual à origem "email" do WooCommerce).</div>';
     if(r.topBuyers && r.topBuyers.length){
-      html += '<table><tr><th>Quem comprou</th><th>Total</th></tr>'
+      html += '<table><tr><th>Quem comprou (clicou no e-mail)</th><th>Total</th></tr>'
         + r.topBuyers.map(b=>'<tr><td>'+esc(b.email)+'</td><td>'+brl(b.total)+'</td></tr>').join('') + '</table>';
-    } else { html += '<div class="hint">Ainda sem compras registradas desta campanha.</div>'; }
+    } else { html += '<div class="hint">Nenhuma compra atribuída ao e-mail ainda (ninguém que clicou comprou).</div>'; }
     box.innerHTML = html;
   }catch(e){ box.innerHTML = '<div class="msg err">Falhou.</div>'; }
 }
