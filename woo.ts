@@ -95,40 +95,26 @@ function mapProduct(p: any): WooProduct {
   };
 }
 
-// Só entra produto publicado, EM ESTOQUE e visível no catálogo.
+// Só entra produto publicado, EM ESTOQUE (com quantidade > 0 quando gerencia
+// estoque) e visível no catálogo.
 function produtoOk(p: any): boolean {
   const vis = String(p?.catalog_visibility || 'visible');
   const visivel = vis === 'visible' || vis === 'catalog';
-  const emEstoque = String(p?.stock_status || 'instock') === 'instock';
-  return visivel && emEstoque;
+  if (!visivel) return false;
+  if (String(p?.stock_status || 'instock') !== 'instock') return false;
+  // se o produto gerencia estoque e a quantidade é 0 ou menos, fora
+  if (p?.manage_stock && p?.stock_quantity != null && Number(p.stock_quantity) <= 0) return false;
+  return true;
 }
 
-// Mescla NOVIDADES (ultimos cadastrados) + MAIS VENDIDOS, intercalando e sem repetir.
-// Filtra só os EM ESTOQUE e visíveis (busca mais que o necessário e corta depois).
+// Retorna só os ÚLTIMOS PRODUTOS CADASTRADOS (novidades), em estoque e visíveis.
+// A assinatura (newCount, bestCount) é mantida; o total enviado = newCount + bestCount.
+// Busca bem mais que o necessário e corta, pra garantir a quantidade após o filtro.
 export async function fetchCampaignProducts(newCount: number, bestCount: number): Promise<WooProduct[]> {
-  const nFetch = Math.min(newCount * 2 + 6, 50);
-  const bFetch = Math.min(bestCount * 2 + 6, 50);
-  const [newestRaw, bestRaw] = await Promise.all([
-    wooGet(`status=publish&stock_status=instock&per_page=${nFetch}&orderby=date&order=desc`),
-    wooGet(`status=publish&stock_status=instock&per_page=${bFetch}&orderby=popularity&order=desc`),
-  ]);
-
-  const newest = newestRaw.filter(produtoOk).slice(0, newCount);
-  const best = bestRaw.filter(produtoOk).slice(0, bestCount);
-
-  const seen = new Set<number>();
-  const out: WooProduct[] = [];
-  const max = Math.max(newest.length, best.length);
-  for (let i = 0; i < max; i++) {
-    for (const src of [newest[i], best[i]]) {
-      if (!src) continue;
-      const id = Number(src.id);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push(mapProduct(src));
-    }
-  }
-  return out;
+  const total = Math.max(1, newCount + bestCount);
+  const fetchN = Math.min(total * 3 + 10, 100);
+  const raw = await wooGet(`status=publish&stock_status=instock&per_page=${fetchN}&orderby=date&order=desc`);
+  return raw.filter(produtoOk).slice(0, total).map(mapProduct);
 }
 
 export interface WooOrder {

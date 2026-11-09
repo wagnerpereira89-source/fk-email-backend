@@ -21,7 +21,7 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'fk-email-backend',
-    version: '0.4.1',
+    version: '0.4.2',
     env: {
       supabase: hasSupabaseEnv(),
       ses: hasSesEnv(),

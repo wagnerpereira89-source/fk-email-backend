@@ -95,7 +95,7 @@ export const ADMIN_HTML = `<!doctype html>
       <input id="subject" value="Novidades que você vai amar 🩷" />
       <label>Texto de abertura</label>
       <textarea id="intro">Separamos uns queridinhos que a gente sabe que você vai amar 🩷</textarea>
-      <div class="hint">Vai com 4 novidades + 4 mais vendidos (buscados na hora de criar).</div>
+      <div class="hint">Vai com os 8 últimos produtos cadastrados, só em estoque (buscados na hora do disparo).</div>
       <div class="row" style="margin-top:12px"><button id="btnCreate" onclick="createCampaign()">Criar campanha</button></div>
       <div id="createMsg" class="msg"></div>
     </div>
